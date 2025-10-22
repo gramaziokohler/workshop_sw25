@@ -167,7 +167,7 @@ def add_safe_frames(path: list[Frame], approach_height: float) -> list[Frame]:
     path.insert(0, safe_approach)
 
     safe_retract = path[-1].copy()
-    safe_retract.point.z = safe_approach.point.z
+    safe_retract.point += safe_approach.zaxis * approach_height
     path.append(safe_retract)
 
     return path
