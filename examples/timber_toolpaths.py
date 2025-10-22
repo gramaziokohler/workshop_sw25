@@ -14,7 +14,7 @@ from Rhino.Geometry import CurveOffsetCornerStyle # type: ignore
 
 
 # Spiral paths start out from the center of the slice and move outwards if this is enabled
-USE_CENTER_OUT_CUTTING = True
+USE_CENTER_OUT_CUTTING = False
 Z_FIGHTING_OFFSET = 0.0001
 CURVE_OFFSET_STYLE = CurveOffsetCornerStyle.NONE
 ADD_SAFE_FRAMES = True
@@ -79,20 +79,24 @@ def get_toolpath_from_lap_processing(beam: Beam,
             arranged_offset_spirals = reversed(slice_offsets)
 
         for slice_offset in arranged_offset_spirals:
-            max_divisions = int(slice_offset.length() / min_step)
-            _params, points = slice_offset.divide_by_count(max_divisions, return_points=True)
+            for subcurve in slice_offset.native_curve.GetSubCurves():
+                segment = NurbsCurve.from_native(subcurve)
 
-            if next_slice_start_point is None:
-                next_slice_start_point = points[0]
-            for point in points:
-                frame = slicing_frame.copy()
-                frame.point = point
-                path.append(frame)
+                max_divisions = int(segment.length() / min_step)
+                _params, points = segment.divide_by_count(max_divisions, return_points=True)
+
+                if next_slice_start_point is None:
+                    next_slice_start_point = points[0]
+                for point in points:
+                    frame = slicing_frame.copy()
+                    frame.point = point
+                    path.append(frame)
 
         # Move in the same frame to the start of the next slice
-        frame = slicing_frame.copy()
-        frame.point = next_slice_start_point
-        path.append(frame)
+        if next_slice_start_point:
+            frame = slicing_frame.copy()
+            frame.point = next_slice_start_point
+            path.append(frame)
 
     if ADD_SAFE_FRAMES:
         path = add_safe_frames(path, -approach_height)
