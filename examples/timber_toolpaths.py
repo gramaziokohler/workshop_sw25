@@ -1,6 +1,6 @@
 import math
 
-from compas.geometry import Frame, Transformation, Brep, Curve
+from compas.geometry import Frame, Transformation, Brep, Curve, NurbsCurve
 
 from compas_timber.elements import Beam
 from compas_timber.fabrication import JackRafterCut, JackRafterCutProxy, StepJointNotch
@@ -13,6 +13,13 @@ from compas_rhino.geometry import RhinoNurbsSurface
 from Rhino.Geometry import CurveOffsetCornerStyle # type: ignore
 
 
+# Spiral paths start out from the center of the slice and move outwards if this is enabled
+USE_CENTER_OUT_CUTTING = True
+Z_FIGHTING_OFFSET = 0.0001
+CURVE_OFFSET_STYLE = CurveOffsetCornerStyle.NONE
+ADD_SAFE_FRAMES = True
+
+
 def get_toolpath_from_lap_processing(beam: Beam, 
                                      processing: BTLxProcessing,
                                      machining_transformation: Transformation = None,
@@ -23,7 +30,6 @@ def get_toolpath_from_lap_processing(beam: Beam,
                                      approach_height: float = 0.5,
                                      tolerance : float = 1e-3,
                                      **kwargs):
-
     volume = processing.volume_from_params_and_beam(beam)
     volume_at_origin = volume.transformed(machining_transformation)
 
@@ -36,12 +42,14 @@ def get_toolpath_from_lap_processing(beam: Beam,
 
     for i in range(levels):
         frame = machining_frame.copy()
-        frame.point += -frame.zaxis * (stepdown * i)
+        frame.point += -frame.zaxis * ((stepdown * i) + Z_FIGHTING_OFFSET)
         slicing_frames.append(frame)
         slices += e.slice(frame)
 
     radius = tool_radius / 2
+    offset_step = radius * -1
 
+    flat_spirals = []
     spirals = []
     
     for current_slice, slicing_frame in zip(slices, slicing_frames):
@@ -50,20 +58,27 @@ def get_toolpath_from_lap_processing(beam: Beam,
         slice_offsets = [current_offset]
 
         for i in range(num_offsets):
-            offset_step = radius * -1
-            curve_offset_style = CurveOffsetCornerStyle.NONE
-            c = Curve.from_native(current_offset.native_curve.Offset(frame_to_rhino_plane(slicing_frame), offset_step, tolerance, curve_offset_style)[0])
+            slicing_plane = frame_to_rhino_plane(slicing_frame)
+            native_offset = current_offset.native_curve.Offset(slicing_plane, offset_step, tolerance, CURVE_OFFSET_STYLE)
+            current_offset = Curve.from_native(native_offset[0])
             
-            current_offset = c
-            slice_offsets.insert(0, c)
+            slice_offsets.insert(0, current_offset)
+            flat_spirals.insert(0, current_offset)
         
-        spirals.append(slice_offsets)
+        spirals.insert(0, slice_offsets)
 
     path = []
 
     for slice_offsets, slicing_frame in zip(spirals, slicing_frames):
         next_slice_start_point = None
-        for slice_offset in slice_offsets:
+
+        # Spiral paths can start from the center and move outwards or vice versa
+        if USE_CENTER_OUT_CUTTING:
+            arranged_offset_spirals = slice_offsets
+        else:
+            arranged_offset_spirals = reversed(slice_offsets)
+
+        for slice_offset in arranged_offset_spirals:
             max_divisions = int(slice_offset.length() / min_step)
             _params, points = slice_offset.divide_by_count(max_divisions, return_points=True)
 
@@ -79,9 +94,10 @@ def get_toolpath_from_lap_processing(beam: Beam,
         frame.point = next_slice_start_point
         path.append(frame)
 
-    path = add_safe_points(path, approach_height)
+    if ADD_SAFE_FRAMES:
+        path = add_safe_frames(path, -approach_height)
 
-    return "subtraction", path, volume_at_origin, slices, slicing_frames
+    return "subtraction", path, volume_at_origin, flat_spirals, slicing_frames
 
 
 def get_toolpath_from_jackraftercut_processing(beam: Beam, 
@@ -124,7 +140,7 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
 
         max_divisions = int(isocurve.length() / min_step)
         _params, points = isocurve.divide_by_count(max_divisions, return_points=True)
-        if i % 2 == 0:
+        if i % 2 == 1:
             points.reverse()
 
         for point in points:
@@ -134,12 +150,13 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
 
         isocurves.append(isocurve)
 
-    path = add_safe_points(path, approach_height)
+    if ADD_SAFE_FRAMES:
+        path = add_safe_frames(path, approach_height)
 
     return "cut", path, slice_surface, isocurves
 
 
-def add_safe_points(path: list[Frame], approach_height: float) -> list[Frame]:
+def add_safe_frames(path: list[Frame], approach_height: float) -> list[Frame]:
     # Add safe approach and retract frames to the toolpath
     safe_approach = path[0].copy()
     safe_approach.point += safe_approach.zaxis * approach_height
@@ -153,6 +170,10 @@ def add_safe_points(path: list[Frame], approach_height: float) -> list[Frame]:
 
 
 def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machining_transformation: Transformation, machining_side: int, **kwargs):
+    # Automatically pick the opposite side for machining if not specified (-1)
+    if machining_side == -1:
+        machining_side = (processing.ref_side_index + 2) % 4
+
     machining_frame = beam.ref_sides[machining_side].transformed(machining_transformation)
 
     if isinstance(processing, (Lap, LapProxy)):
