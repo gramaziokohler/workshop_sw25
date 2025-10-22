@@ -82,7 +82,7 @@ def get_toolpath_from_lap_processing(beam: Beam,
             for subcurve in slice_offset.native_curve.GetSubCurves():
                 segment = NurbsCurve.from_native(subcurve)
 
-                max_divisions = int(segment.length() / min_step)
+                max_divisions = max(1, int(segment.length() / min_step))
                 _params, points = segment.divide_by_count(max_divisions, return_points=True)
 
                 if next_slice_start_point is None:
@@ -142,7 +142,7 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
         else:
             isocurve = slice_surface.isocurve_v(param)
 
-        max_divisions = int(isocurve.length() / min_step)
+        max_divisions = max(1, int(isocurve.length() / min_step))
         _params, points = isocurve.divide_by_count(max_divisions, return_points=True)
         if i % 2 == 1:
             points.reverse()
