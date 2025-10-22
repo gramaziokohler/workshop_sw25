@@ -1,9 +1,9 @@
 import math
 
-from compas.geometry import Frame, Transformation, Brep, Curve, NurbsCurve
+from compas.geometry import Frame, Transformation, Vector, Brep, Curve, NurbsCurve
 
 from compas_timber.elements import Beam
-from compas_timber.fabrication import JackRafterCut, JackRafterCutProxy, StepJointNotch
+from compas_timber.fabrication import JackRafterCut, JackRafterCutProxy, StepJoint, StepJointNotch
 from compas_timber.fabrication import Lap, LapProxy
 from compas_timber.fabrication import BTLxProcessing
 
@@ -99,9 +99,77 @@ def get_toolpath_from_lap_processing(beam: Beam,
             path.append(frame)
 
     if ADD_SAFE_FRAMES:
-        path = add_safe_frames(path, -approach_height)
+        approach_vector = path[0].zaxis * -approach_height
+        path = add_safe_frames(path, approach_vector)
 
     return "subtraction", path, volume_at_origin, flat_spirals, slicing_frames
+
+
+def get_toolpath_for_plane_cut(beam: Beam, 
+                               blank_brep_at_origin: Brep, 
+                               frame: Frame,
+                               machining_frame: Frame = None,
+                               tool_radius: float = 0.2,
+                               min_step: float = None,
+                               approach_height: float = 0.5,
+                               flip_direction: bool = False) -> list[Frame]:
+    slices = blank_brep_at_origin.slice(frame)
+    if len(slices) != 1:
+        raise ValueError("Expected exactly one slice from the blank at the machining plane.")
+    
+    slice_surface = RhinoNurbsSurface.from_corners(slices[0].points[0:4])
+
+    path = []
+    radius = tool_radius / 2
+    num_steps = int((beam.height / 2) / radius) - 1
+    isocurves = []
+
+    # Determine the U/V curve direction (most aligned with world X axis)
+    p1 = slice_surface.isocurve_u(0).point_at(0)
+    p2 = slice_surface.isocurve_u(0).point_at(1)
+    isocurve_u_vector = (p2 - p1).unitized()
+    dot_u = abs(isocurve_u_vector.dot(Vector(1, 0, 0)))
+
+    p1 = slice_surface.isocurve_v(0).point_at(0)
+    p2 = slice_surface.isocurve_v(0).point_at(1)
+    isocurve_v_vector = (p2 - p1).unitized()
+    dot_v = abs(isocurve_v_vector.dot(Vector(1, 0, 0)))
+
+    direction = dot_u > dot_v
+    if flip_direction:
+        direction = not direction
+
+    if direction:
+        linear_spacer = slice_surface.space_u
+        isocurve_selector = slice_surface.isocurve_u
+    else:
+        linear_spacer = slice_surface.space_v
+        isocurve_selector = slice_surface.isocurve_v
+
+    params = linear_spacer(num_steps)
+
+    for i, param in enumerate(params):
+        isocurve = isocurve_selector(param)
+
+        max_divisions = max(1, int(isocurve.length() / min_step))
+        _params, points = isocurve.divide_by_count(max_divisions, return_points=True)
+        if i % 2 == 1:
+            points.reverse()
+
+        for point in points:
+            frame = machining_frame.copy()
+            frame.point = point
+            path.append(frame)
+
+        isocurves.append(isocurve)
+
+    if ADD_SAFE_FRAMES:
+        start_end_vector = isocurves[0].point_at(0) - isocurves[-1].point_at(0)
+        start_end_vector.unitize()
+        approach_vector = start_end_vector * approach_height
+        path = add_safe_frames(path, approach_vector)
+
+    return path, slice_surface, isocurves
 
 
 def get_toolpath_from_jackraftercut_processing(beam: Beam, 
@@ -117,57 +185,26 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
                                                **kwargs):
     plane = processing.plane_from_params_and_beam(beam)
     plane_at_origin = plane.transformed(machining_transformation)
-    frame = Frame.from_plane(plane_at_origin)
-
     blank_brep_at_origin = beam.blank.to_brep().transformed(machining_transformation)
+
+    frame = Frame.from_plane(plane_at_origin)
     slices = blank_brep_at_origin.slice(frame)
     if len(slices) != 1:
         raise ValueError("Expected exactly one slice from the blank at the machining plane.")
-    
-    slice_surface = RhinoNurbsSurface.from_corners(slices[0].points[0:4])
 
-    path = []
-    radius = tool_radius / 2
-    num_steps = int((beam.height / 2) / radius) - 1
-    isocurves = []
-
-    if flip_direction:
-        params = slice_surface.space_u(num_steps)
-    else:
-        params = slice_surface.space_v(num_steps)
-
-    for i, param in enumerate(params):
-        if flip_direction:
-            isocurve = slice_surface.isocurve_u(param)
-        else:
-            isocurve = slice_surface.isocurve_v(param)
-
-        max_divisions = max(1, int(isocurve.length() / min_step))
-        _params, points = isocurve.divide_by_count(max_divisions, return_points=True)
-        if i % 2 == 1:
-            points.reverse()
-
-        for point in points:
-            frame = machining_frame.copy()
-            frame.point = point
-            path.append(frame)
-
-        isocurves.append(isocurve)
-
-    if ADD_SAFE_FRAMES:
-        path = add_safe_frames(path, approach_height)
+    path, slice_surface, isocurves = get_toolpath_for_plane_cut(beam, blank_brep_at_origin, frame, machining_frame=machining_frame, tool_radius=tool_radius, min_step=min_step, approach_height=approach_height, flip_direction=flip_direction)
 
     return "cut", path, slice_surface, isocurves
 
 
-def add_safe_frames(path: list[Frame], approach_height: float) -> list[Frame]:
+def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
     # Add safe approach and retract frames to the toolpath
     safe_approach = path[0].copy()
-    safe_approach.point += safe_approach.zaxis * approach_height
+    safe_approach.point += approach_vector
     path.insert(0, safe_approach)
 
     safe_retract = path[-1].copy()
-    safe_retract.point += safe_approach.zaxis * approach_height
+    safe_retract.point += approach_vector
     path.append(safe_retract)
 
     return path
@@ -180,9 +217,12 @@ def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machini
 
     machining_frame = beam.ref_sides[machining_side].transformed(machining_transformation)
 
+    toolpath_function = None
+
     if isinstance(processing, (Lap, LapProxy)):
-        return get_toolpath_from_lap_processing(beam, processing, machining_transformation, machining_frame=machining_frame, **kwargs)
+        toolpath_function = get_toolpath_from_lap_processing
     elif isinstance(processing, (JackRafterCut, JackRafterCutProxy)):
-        return get_toolpath_from_jackraftercut_processing(beam, processing, machining_transformation, machining_frame=machining_frame, **kwargs)
+        toolpath_function = get_toolpath_from_jackraftercut_processing
 
-
+    if toolpath_function:
+        return toolpath_function(beam, processing, machining_transformation, machining_frame=machining_frame, **kwargs)
