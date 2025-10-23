@@ -42,7 +42,7 @@ def get_toolpath_from_lap_processing(beam: Beam,
 
     for i in range(levels):
         frame = machining_frame.copy()
-        frame.point += -frame.zaxis * ((stepdown * i) + Z_FIGHTING_OFFSET)
+        frame.point += frame.zaxis * ((stepdown * i) + Z_FIGHTING_OFFSET)
         slicing_frames.append(frame)
         slices += e.slice(frame)
 
@@ -62,10 +62,10 @@ def get_toolpath_from_lap_processing(beam: Beam,
             native_offset = current_offset.native_curve.Offset(slicing_plane, offset_step, tolerance, CURVE_OFFSET_STYLE)
             current_offset = Curve.from_native(native_offset[0])
             
-            slice_offsets.insert(0, current_offset)
-            flat_spirals.insert(0, current_offset)
+            slice_offsets.append(current_offset)
+            flat_spirals.append(current_offset)
         
-        spirals.insert(0, slice_offsets)
+        spirals.append(slice_offsets)
 
     path = []
 
@@ -99,6 +99,8 @@ def get_toolpath_from_lap_processing(beam: Beam,
             path.append(frame)
 
     if ADD_SAFE_FRAMES:
+        # We negate the approach height to have the approach vector point outwards
+        # from the beam because Z axis points inwards
         approach_vector = path[0].zaxis * -approach_height
         path = add_safe_frames(path, approach_vector)
 
@@ -211,11 +213,13 @@ def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
 
 
 def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machining_transformation: Transformation, machining_side: int, **kwargs):
-    # Automatically pick the opposite side for machining if not specified (-1)
-    if machining_side == -1:
-        machining_side = (processing.ref_side_index + 2) % 4
-
+    # Automatically pick machining side if not specified (-1)
+    machining_side = machining_side if machining_side != -1 else processing.ref_side_index
     machining_frame = beam.ref_sides[machining_side].transformed(machining_transformation)
+
+    # We flip the machining frame to point Z axis inwards into the beam
+    # matching what would likely be the TCP frame of the machine
+    machining_frame.yaxis *= -1
 
     toolpath_function = None
 
