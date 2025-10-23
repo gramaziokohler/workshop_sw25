@@ -201,19 +201,6 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
     return "cut", path, slice_surface, isocurves
 
 
-def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
-    # Add safe approach and retract frames to the toolpath
-    safe_approach = path[0].copy()
-    safe_approach.point += approach_vector
-    path.insert(0, safe_approach)
-
-    safe_retract = path[-1].copy()
-    safe_retract.point += approach_vector
-    path.append(safe_retract)
-
-    return path
-
-
 def get_toolpath_for_drilling_processing(beam: Beam, 
                                            processing: Drilling,
                                            machining_transformation: Transformation = None,
@@ -259,6 +246,19 @@ def get_toolpath_for_drilling_processing(beam: Beam,
     path.extend(reversed(approach_path))
 
     return "subtraction", path, center_line, [], []
+
+
+def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
+    # Add safe approach and retract frames to the toolpath
+    safe_approach = path[0].copy()
+    safe_approach.point += approach_vector
+    path.insert(0, safe_approach)
+
+    safe_retract = path[-1].copy()
+    safe_retract.point += approach_vector
+    path.append(safe_retract)
+
+    return path
 
 
 def interpolate_frames(start_frame: Frame, end_frame: Frame, min_step: float) -> list[Frame]:
