@@ -1,10 +1,12 @@
 import math
 
-from compas.geometry import Frame, Transformation, Vector, Brep, Curve, NurbsCurve
+from compas.geometry import Frame, Transformation, Translation, Point, Line, Vector, Plane, Brep, Curve, NurbsCurve
+from compas.itertools import linspace
 
 from compas_timber.elements import Beam
 from compas_timber.fabrication import JackRafterCut, JackRafterCutProxy, StepJoint, StepJointNotch
 from compas_timber.fabrication import Lap, LapProxy
+from compas_timber.fabrication import Drilling
 from compas_timber.fabrication import BTLxProcessing
 
 from compas_rhino.conversions import frame_to_rhino_plane
@@ -212,6 +214,65 @@ def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
     return path
 
 
+def get_toolpath_for_drilling_processing(beam: Beam, 
+                                           processing: Drilling,
+                                           machining_transformation: Transformation = None,
+                                           machining_frame: Frame = None,
+                                           tool_radius: float = 0.2,
+                                           stepdown: float = 0.05,
+                                           min_step: float = None,
+                                           approach_height: float = 0.5,
+                                           flip_direction: bool = False,
+                                           tolerance : float = 1e-3,
+                                           **kwargs):
+    cylinder = processing.cylinder_from_params_and_element(beam)
+    cylinder_at_origin = cylinder.transformed(machining_transformation)
+    center_line = cylinder_at_origin.axis.copy()
+    center_line.transform(Translation.from_vector(center_line.direction * -cylinder.height / 2))
+
+    plane = Plane(center_line.start, center_line.direction)
+    entry_frame = Frame.from_plane(plane)
+
+    # We negate the approach height to have the approach vector point outwards
+    # from the beam because Z axis points inwards
+    approach_vector = entry_frame.zaxis * -approach_height
+
+    path = []
+
+    safe_approach = machining_frame.copy()
+    safe_approach.point = entry_frame.point
+    safe_approach.point += approach_vector
+    
+    approach_path = interpolate_frames(safe_approach, entry_frame, min_step)
+    path.extend(approach_path)
+
+    # TODO: support depth / depth_limited
+    drill_path = []
+    for point in divide_line(center_line, min_step):
+        frame = entry_frame.copy()
+        frame.point = point
+        drill_path.append(frame)
+    path.extend(drill_path)
+
+    # Start retracting
+    path.extend(reversed(drill_path))
+    path.extend(reversed(approach_path))
+
+    return "subtraction", path, center_line, [], []
+
+
+def interpolate_frames(start_frame: Frame, end_frame: Frame, min_step: float) -> list[Frame]:
+    line = Line(start_frame.point, end_frame.point)
+    max_divisions = max(1, int(line.length / min_step))
+    return start_frame.interpolate_frames(end_frame, max_divisions)
+
+
+def divide_line(line: Line, step_length: float) -> list[Point]:
+    max_divisions = max(1, int(line.length / step_length))
+    params = linspace(0, 1, max_divisions)
+    return [line.point_at(t) for t in params]
+
+
 def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machining_transformation: Transformation, machining_side: int, **kwargs):
     # Automatically pick machining side if not specified (-1)
     machining_side = machining_side if machining_side != -1 else processing.ref_side_index
@@ -227,6 +288,8 @@ def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machini
         toolpath_function = get_toolpath_from_lap_processing
     elif isinstance(processing, (JackRafterCut, JackRafterCutProxy)):
         toolpath_function = get_toolpath_from_jackraftercut_processing
+    elif isinstance(processing, Drilling):
+        toolpath_function = get_toolpath_for_drilling_processing
 
     if toolpath_function:
         return toolpath_function(beam, processing, machining_transformation, machining_frame=machining_frame, **kwargs)
