@@ -1,13 +1,15 @@
 import math
 
 from compas.geometry import Frame, Transformation, Translation, Point, Line, Vector, Plane, Brep, Curve, NurbsCurve
+from compas.geometry import intersection_line_line, Polyline, offset_polyline
 from compas.itertools import linspace
 
 from compas_timber.elements import Beam
 from compas_timber.fabrication import JackRafterCut, JackRafterCutProxy, StepJoint, StepJointNotch
 from compas_timber.fabrication import Lap, LapProxy
-from compas_timber.fabrication import Drilling
+from compas_timber.fabrication import Drilling, FreeContour
 from compas_timber.fabrication import BTLxProcessing
+from compas_timber.utils import correct_polyline_direction
 
 from compas_rhino.conversions import frame_to_rhino_plane
 from compas_rhino.geometry import RhinoNurbsSurface
@@ -223,16 +225,16 @@ def get_toolpath_from_jackraftercut_processing(beam: Beam,
 
 
 def get_toolpath_for_drilling_processing(beam: Beam, 
-                                           processing: Drilling,
-                                           machining_transformation: Transformation = None,
-                                           machining_frame: Frame = None,
-                                           tool_radius: float = 0.2,
-                                           stepdown: float = 0.05,
-                                           min_step: float = None,
-                                           approach_height: float = 0.5,
-                                           flip_direction: bool = False,
-                                           tolerance : float = 1e-3,
-                                           **kwargs):
+                                         processing: Drilling,
+                                         machining_transformation: Transformation = None,
+                                         machining_frame: Frame = None,
+                                         tool_radius: float = 0.2,
+                                         stepdown: float = 0.05,
+                                         min_step: float = None,
+                                         approach_height: float = 0.5,
+                                         flip_direction: bool = False,
+                                         tolerance : float = 1e-3,
+                                         **kwargs):
     cylinder = processing.cylinder_from_params_and_element(beam)
     cylinder_at_origin = cylinder.transformed(machining_transformation)
     center_line = cylinder_at_origin.axis.copy()
@@ -268,6 +270,42 @@ def get_toolpath_for_drilling_processing(beam: Beam,
 
     return "subtraction", path, center_line, [], []
 
+
+def get_toolpath_for_free_contour_processing(beam: Beam,
+                                             processing: Drilling,
+                                             machining_transformation: Transformation = None,
+                                             machining_frame: Frame = None,
+                                             tool_radius: float = 0.2,
+                                             stepdown: float = 0.05,
+                                             min_step: float = None,
+                                             approach_height: float = 0.5,
+                                             flip_direction: bool = False,
+                                             tolerance : float = 1e-3,
+                                             **kwargs):
+
+    ref_side = beam.ref_sides[processing.ref_side_index]
+    xform = Transformation.from_frame_to_frame(Frame.worldXY(), ref_side)
+    pts = [pt.transformed(xform) for pt in processing.contour_param_object.polyline]
+    pts = correct_polyline_direction(pts, -ref_side.normal, clockwise=True)
+    pln = Polyline(offset_polyline(Polyline(pts), 0.001, normal=-ref_side.normal))
+    pt = intersection_line_line(pln.lines[0], pln.lines[-1])
+    pln[0] = pt[0]
+    pln[-1] = pt[0]
+    volume = Brep.from_extrusion(NurbsCurve.from_points(pln, degree=1), -ref_side.normal * processing.contour_param_object.depth)
+    volume_at_origin = volume.transformed(machining_transformation)
+
+    path, flat_spirals, slicing_frames = slice_volume_offset_spiral_toolpath(
+        volume_at_origin,
+        beam,
+        machining_frame,
+        tool_radius,
+        stepdown,
+        min_step,
+        approach_height,
+        tolerance,
+    )
+
+    return "subtraction", path, volume_at_origin, flat_spirals, slicing_frames
 
 def add_safe_frames(path: list[Frame], approach_vector: Vector) -> list[Frame]:
     # Add safe approach and retract frames to the toolpath
@@ -309,6 +347,8 @@ def get_toolpath_from_processing(beam: Beam, processing: BTLxProcessing, machini
         toolpath_function = get_toolpath_from_lap_processing
     elif isinstance(processing, (JackRafterCut, JackRafterCutProxy)):
         toolpath_function = get_toolpath_from_jackraftercut_processing
+    elif isinstance(processing, FreeContour):
+        toolpath_function = get_toolpath_for_free_contour_processing
     elif isinstance(processing, Drilling):
         toolpath_function = get_toolpath_for_drilling_processing
 
