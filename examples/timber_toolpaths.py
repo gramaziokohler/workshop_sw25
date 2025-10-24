@@ -35,7 +35,29 @@ def get_toolpath_from_lap_processing(beam: Beam,
     volume = processing.volume_from_params_and_beam(beam)
     volume_at_origin = volume.transformed(machining_transformation)
 
-    e = Brep.from_mesh(volume_at_origin.to_mesh())
+    brep = Brep.from_mesh(volume_at_origin.to_mesh())
+    
+    path, flat_spirals, slicing_frames = slice_volume_offset_spiral_toolpath(
+        brep,
+        beam,
+        machining_frame,
+        tool_radius,
+        stepdown,
+        min_step,
+        approach_height,
+        tolerance,
+    )
+
+    return "subtraction", path, volume_at_origin, flat_spirals, slicing_frames
+
+def slice_volume_offset_spiral_toolpath(brep: Brep,
+                                        beam: Beam, 
+                                        machining_frame: Frame,
+                                        tool_radius: float,
+                                        stepdown: float,
+                                        min_step: float,
+                                        approach_height: float,
+                                        tolerance: float):
     
     slices = []
     slicing_frames = []
@@ -46,7 +68,7 @@ def get_toolpath_from_lap_processing(beam: Beam,
         frame = machining_frame.copy()
         frame.point += frame.zaxis * ((stepdown * i) + Z_FIGHTING_OFFSET)
         slicing_frames.append(frame)
-        slices += e.slice(frame)
+        slices += brep.slice(frame)
 
     radius = tool_radius / 2
     offset_step = radius * -1
@@ -106,8 +128,7 @@ def get_toolpath_from_lap_processing(beam: Beam,
         approach_vector = path[0].zaxis * -approach_height
         path = add_safe_frames(path, approach_vector)
 
-    return "subtraction", path, volume_at_origin, flat_spirals, slicing_frames
-
+    return path, flat_spirals, slicing_frames
 
 def get_toolpath_for_plane_cut(beam: Beam, 
                                blank_brep_at_origin: Brep, 
